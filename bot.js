@@ -1,6 +1,8 @@
 import "dotenv/config";
 import TelegramBot from "node-telegram-bot-api";
 import { spawn } from "child_process";
+import https from "https";
+import { createReadStream } from "fs";
 import { access, copyFile, mkdir, readFile, writeFile } from "fs/promises";
 import path from "path";
 import { loadConfig } from "./src/config.js";
@@ -11,6 +13,13 @@ import {
 } from "./src/message-utils.js";
 
 const config = loadConfig();
+const defaultRepoDef = {
+  dir: config.targetRepoDir,
+  branch: config.targetBranch,
+  remote: config.targetRemote,
+};
+const RESERVED_ALIASES = new Set(["default"]);
+let repoAliasStore = { aliases: {}, active: null };
 
 // Simple single-flight lock (prevents overlapping Codex runs)
 let busy = false;
@@ -190,12 +199,332 @@ async function runGit(args) {
   return runCommand("git", [...gitArgs(), ...args]);
 }
 
+const MAX_DIFF_PREVIEW_CHARS = 3500;
+const OPENAI_TRANSCRIBE_URL = "https://api.openai.com/v1/audio/transcriptions";
+const ACTIONS_POLL_INTERVAL_MS = 10000;
+const ACTIONS_POLL_ATTEMPTS = 12;
+const GITHUB_API = "https://api.github.com";
+
+async function buildDiffPreview({ ref = null } = {}) {
+  const args = ref
+    ? ["show", "--stat", "--patch", "-U3", "--color=never", ref]
+    : ["diff", "--stat", "--patch", "-U3", "--color=never"];
+  const diff = await runGit(args);
+  if (diff.code !== 0) return "";
+  const trimmed = (diff.out || "").trim();
+  if (!trimmed) return "";
+  if (trimmed.length > MAX_DIFF_PREVIEW_CHARS) {
+    return `${trimmed.slice(0, MAX_DIFF_PREVIEW_CHARS)}\n... (diff preview truncated)`;
+  }
+  return trimmed;
+}
+
+function normalizeAliasName(name) {
+  return String(name || "").trim().toLowerCase();
+}
+
+async function saveRepoAliasStore() {
+  await mkdir(path.dirname(config.repoAliasStorePath), { recursive: true });
+  await writeFile(
+    config.repoAliasStorePath,
+    JSON.stringify(repoAliasStore, null, 2),
+    "utf8"
+  );
+}
+
+async function applyRepoSelection(def, aliasName, { persist = true, resetSessions = true } = {}) {
+  const resolvedDir = path.resolve(def.dir);
+  try {
+    await access(path.join(resolvedDir, ".git"));
+  } catch {
+    throw new Error(`TARGET_REPO_DIR does not look like a git repo: ${resolvedDir}`);
+  }
+  config.targetRepoDir = resolvedDir;
+  config.targetBranch = def.branch || defaultRepoDef.branch;
+  config.targetRemote = def.remote || defaultRepoDef.remote;
+  config.inputsDir = path.resolve(resolvedDir, config.inputsSubdir);
+  config.primaryGitDir = path.resolve(resolvedDir, ".git");
+  repoAliasStore.active = aliasName;
+  if (persist) {
+    await saveRepoAliasStore();
+  }
+  if (resetSessions) {
+    sessions = {};
+    await saveSessions();
+  }
+}
+
+async function loadRepoAliasStore() {
+  try {
+    const raw = await readFile(config.repoAliasStorePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      repoAliasStore = {
+        aliases: parsed.aliases || {},
+        active: parsed.active || null,
+      };
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      console.error("Failed to read repo alias store:", error);
+    }
+    repoAliasStore = { aliases: {}, active: null };
+  }
+  const active = repoAliasStore.active;
+  if (active && repoAliasStore.aliases[active]) {
+    await applyRepoSelection(repoAliasStore.aliases[active], active, {
+      persist: false,
+      resetSessions: false,
+    });
+  }
+}
+
+async function addRepoAlias(alias, def) {
+  repoAliasStore.aliases[alias] = def;
+  await saveRepoAliasStore();
+}
+
+async function removeRepoAlias(alias) {
+  delete repoAliasStore.aliases[alias];
+  if (repoAliasStore.active === alias) {
+    repoAliasStore.active = null;
+    await applyRepoSelection(defaultRepoDef, null);
+  } else {
+    await saveRepoAliasStore();
+  }
+}
+
+function formatAliasLine(name, def, isActive) {
+  return `${isActive ? "✅" : "•"} ${name} -> ${def.dir} [branch: ${def.branch || "main"}, remote: ${def.remote || "origin"}]`;
+}
+
+function getAliasListMessage() {
+  const active = repoAliasStore.active || "default";
+  const lines = [
+    formatAliasLine("default", defaultRepoDef, active === "default"),
+  ];
+  Object.entries(repoAliasStore.aliases).forEach(([name, def]) => {
+    lines.push(formatAliasLine(name, def, active === name));
+  });
+  return lines.join("\n");
+}
+
+async function handleRepoCommand(chatId, text) {
+  const parts = text.trim().split(/\s+/);
+  const action = (parts[1] || "").toLowerCase();
+
+  if (!action || action === "help") {
+    await bot.sendMessage(
+      chatId,
+      "Repo commands:\n/repo list\n/repo add <alias> <path> [branch] [remote]\n/repo use <alias>\n/repo remove <alias>"
+    );
+    return;
+  }
+
+  if (action === "list") {
+    await bot.sendMessage(chatId, getAliasListMessage());
+    return;
+  }
+
+  if (busy) {
+    await bot.sendMessage(
+      chatId,
+      "⏳ I’m busy running another request. Try the repo command again shortly."
+    );
+    return;
+  }
+
+  if (action === "add") {
+    const aliasName = normalizeAliasName(parts[2]);
+    const repoPath = parts[3];
+    const branch = parts[4] || defaultRepoDef.branch;
+    const remote = parts[5] || defaultRepoDef.remote;
+    if (!aliasName || RESERVED_ALIASES.has(aliasName)) {
+      await bot.sendMessage(chatId, "Provide a valid alias name (not 'default').");
+      return;
+    }
+    if (!repoPath) {
+      await bot.sendMessage(chatId, "Use: /repo add <alias> <absolute-path> [branch] [remote]");
+      return;
+    }
+    const resolved = path.resolve(repoPath);
+    try {
+      await access(path.join(resolved, ".git"));
+    } catch {
+      await bot.sendMessage(chatId, "Path must be a git repo with a .git directory.");
+      return;
+    }
+    await addRepoAlias(aliasName, { dir: resolved, branch, remote });
+    await bot.sendMessage(
+      chatId,
+      `Alias '${aliasName}' added for ${resolved} (branch ${branch}, remote ${remote}).`
+    );
+    return;
+  }
+
+  if (action === "use") {
+    const aliasName = normalizeAliasName(parts[2]);
+    if (!aliasName) {
+      await bot.sendMessage(chatId, "Use: /repo use <alias|default>");
+      return;
+    }
+    if (aliasName === "default") {
+      await applyRepoSelection(defaultRepoDef, null);
+      await bot.sendMessage(
+        chatId,
+        `Active repo set to default (${defaultRepoDef.dir}). Session memory cleared.`
+      );
+      return;
+    }
+    const aliasConfig = repoAliasStore.aliases[aliasName];
+    if (!aliasConfig) {
+      await bot.sendMessage(chatId, `Alias '${aliasName}' not found. Use /repo list.`);
+      return;
+    }
+    await applyRepoSelection(aliasConfig, aliasName);
+    await bot.sendMessage(
+      chatId,
+      `Active repo set to '${aliasName}' (${aliasConfig.dir}). Session memory cleared.`
+    );
+    return;
+  }
+
+  if (action === "remove") {
+    const aliasName = normalizeAliasName(parts[2]);
+    if (!aliasName || RESERVED_ALIASES.has(aliasName)) {
+      await bot.sendMessage(chatId, "Use: /repo remove <alias> (cannot remove default).");
+      return;
+    }
+    if (!repoAliasStore.aliases[aliasName]) {
+      await bot.sendMessage(chatId, `Alias '${aliasName}' not found.`);
+      return;
+    }
+    await removeRepoAlias(aliasName);
+    await bot.sendMessage(chatId, `Alias '${aliasName}' removed.`);
+    return;
+  }
+
+  await bot.sendMessage(
+    chatId,
+    "Unknown /repo command. Available: list, add, use, remove."
+  );
+}
+
 async function getHeadCommit() {
   const res = await runGit(["rev-parse", "HEAD"]);
   if (res.code !== 0) {
     throw new Error(`Unable to read git HEAD.\n${res.err || res.out || "(empty)"}`);
   }
   return res.out.trim();
+}
+
+async function getCurrentBranch() {
+  const res = await runGit(["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (res.code !== 0) {
+    throw new Error(`Unable to determine branch.\n${res.err || res.out || "(empty)"}`);
+  }
+  return res.out.trim();
+}
+
+async function getRepoSlug() {
+  const res = await runGit(["remote", "get-url", config.targetRemote]);
+  if (res.code !== 0) {
+    throw new Error(`Unable to read remote URL.\n${res.err || res.out || "(empty)"}`);
+  }
+  const remote = (res.out || "").trim();
+  const sshMatch = remote.match(/git@github.com:(.+?)\.git$/i);
+  if (sshMatch) return sshMatch[1];
+  try {
+    const parsed = new URL(remote);
+    if (parsed.hostname !== "github.com") {
+      throw new Error(`Remote ${remote} is not GitHub`);
+    }
+    return parsed.pathname.replace(/^\//, "").replace(/\.git$/, "");
+  } catch {
+    throw new Error(`Unsupported remote format: ${remote}`);
+  }
+}
+
+async function ensureBranchPushed(branch) {
+  const res = await runGit(["push", config.targetRemote, branch]);
+  if (res.code !== 0) {
+    throw new Error(
+      `git push failed while preparing PR.\nstdout:\n${res.out || "(empty)"}\n\nstderr:\n${res.err || "(empty)"}`
+    );
+  }
+}
+
+async function createPullRequest({ title, body, head, base }) {
+  if (!config.githubToken) {
+    throw new Error("Set GITHUB_TOKEN in .env before using /pr.");
+  }
+  const slug = await getRepoSlug();
+  const response = await fetch(`${GITHUB_API}/repos/${slug}/pulls`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.githubToken}`,
+      "User-Agent": "codex-telegram-bridge",
+      Accept: "application/vnd.github+json",
+    },
+    body: JSON.stringify({ title, head, base, body }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    const message = data?.message || "Failed to create pull request.";
+    throw new Error(message);
+  }
+  return data;
+}
+
+async function pollActionsRun(headSha) {
+  if (!config.githubToken) return null;
+  const slug = await getRepoSlug();
+  for (let attempt = 0; attempt < ACTIONS_POLL_ATTEMPTS; attempt += 1) {
+    const response = await fetch(
+      `${GITHUB_API}/repos/${slug}/actions/runs?per_page=10&branch=${config.targetBranch}`,
+      {
+        headers: {
+          Authorization: `Bearer ${config.githubToken}`,
+          "User-Agent": "codex-telegram-bridge",
+          Accept: "application/vnd.github+json",
+        },
+      }
+    );
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.message || "Failed to query workflow runs.");
+    }
+    const run = (data.workflow_runs || []).find((r) => r.head_sha === headSha);
+    if (run) {
+      if (run.status === "completed") {
+        return run;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, ACTIONS_POLL_INTERVAL_MS));
+  }
+  return null;
+}
+
+async function monitorActionsAfterPush(chatId, headSha) {
+  if (!config.githubToken) return;
+  try {
+    const run = await pollActionsRun(headSha);
+    if (!run) {
+      await bot.sendMessage(
+        chatId,
+        "⚠️ GitHub Actions update timed out or no run detected for this commit."
+      );
+      return;
+    }
+    const conclusion = run.conclusion || "unknown";
+    const statusEmoji = conclusion === "success" ? "✅" : conclusion === "failure" ? "❌" : "⚠️";
+    await bot.sendMessage(
+      chatId,
+      `${statusEmoji} GitHub Actions (${run.name || "workflow"}) ${conclusion}.\n${run.html_url || run.url}`
+    );
+  } catch (error) {
+    console.error("Actions monitor failed:", error);
+  }
 }
 
 async function getAheadCount() {
@@ -236,8 +565,6 @@ async function hasWorkNotOnRemote() {
 }
 
 async function saveIncomingImage(msg) {
-  await ensureInputsDir();
-
   let fileId = null;
   if (Array.isArray(msg.photo) && msg.photo.length) {
     fileId = msg.photo[msg.photo.length - 1].file_id;
@@ -250,7 +577,65 @@ async function saveIncomingImage(msg) {
   }
 
   if (!fileId) return null;
+  return downloadToInputs(fileId);
+}
+
+async function downloadToInputs(fileId) {
+  await ensureInputsDir();
   return bot.downloadFile(fileId, config.inputsDir);
+}
+
+async function transcribeMediaFile(localPath) {
+  if (!config.openaiApiKey) {
+    throw new Error("OPENAI_API_KEY not configured.");
+  }
+  const form = new FormData();
+  form.append("file", createReadStream(localPath), path.basename(localPath));
+  form.append("model", config.openaiTranscribeModel || "whisper-1");
+  const response = await fetch(OPENAI_TRANSCRIBE_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.openaiApiKey}`,
+    },
+    body: form,
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    const message = data?.error?.message || "Audio transcription failed.";
+    throw new Error(message);
+  }
+  const text = String(data.text || "").trim();
+  if (!text) {
+    throw new Error("Transcription returned empty text.");
+  }
+  return text;
+}
+
+async function processAudioVideoAttachments(msg) {
+  const targets = [];
+  if (msg.voice?.file_id) targets.push({ type: "voice", fileId: msg.voice.file_id });
+  if (msg.audio?.file_id) targets.push({ type: "audio", fileId: msg.audio.file_id });
+  if (msg.video?.file_id) targets.push({ type: "video", fileId: msg.video.file_id });
+  if (msg.video_note?.file_id) targets.push({ type: "video_note", fileId: msg.video_note.file_id });
+
+  if (!targets.length) return { summary: "", warnings: [] };
+
+  const transcripts = [];
+  const warnings = [];
+  for (const target of targets) {
+    try {
+      const localPath = await downloadToInputs(target.fileId);
+      const text = await transcribeMediaFile(localPath);
+      transcripts.push(`[${target.type}] ${text}`);
+    } catch (error) {
+      warnings.push(`[${target.type}] ${error.message || error}`);
+    }
+  }
+
+  return {
+    summary: transcripts.join("\n"),
+    warnings,
+  };
 }
 
 async function ensureStartupReady() {
@@ -264,6 +649,7 @@ async function ensureStartupReady() {
   await loadSessions();
 }
 
+await loadRepoAliasStore();
 await ensureStartupReady();
 
 bot.on("message", async (msg) => {
@@ -281,9 +667,14 @@ bot.on("message", async (msg) => {
     (msg.document &&
       typeof msg.document.mime_type === "string" &&
       msg.document.mime_type.startsWith("image/"));
+  const hasMedia =
+    Boolean(msg.voice) ||
+    Boolean(msg.audio) ||
+    Boolean(msg.video) ||
+    Boolean(msg.video_note);
 
   const text = (msg.text || msg.caption || "").trim();
-  if (!text && !hasImage) return;
+  if (!text && !hasImage && !hasMedia) return;
 
   if (text === "/start") {
     await bot.sendMessage(
@@ -309,6 +700,11 @@ bot.on("message", async (msg) => {
       chatId,
       `History entries: ${session.history.length}\nPending push: ${pending}`
     );
+    return;
+  }
+
+  if (text.startsWith("/repo")) {
+    await handleRepoCommand(chatId, text);
     return;
   }
 
@@ -349,6 +745,55 @@ bot.on("message", async (msg) => {
     session.pendingPush = null;
     await saveSessions();
     await bot.sendMessage(chatId, "Pending push canceled.");
+    return;
+  }
+
+  if (text.startsWith("/pr")) {
+    const titleAndBody = text.replace(/^\/pr\s*/, "");
+    const [titleRaw, bodyRaw = ""] = titleAndBody.split("|", 2).map((part) => part.trim());
+    if (!titleRaw) {
+      await bot.sendMessage(chatId, "Use: /pr <title> [| optional body]");
+      return;
+    }
+    if (!config.githubToken) {
+      await bot.sendMessage(
+        chatId,
+        "Set GITHUB_TOKEN in .env (GitHub PAT with repo scope) before using /pr."
+      );
+      return;
+    }
+    if (busy) {
+      await bot.sendMessage(
+        chatId,
+        "⏳ I’m still working on the last request. Send again in a moment."
+      );
+      return;
+    }
+    busy = true;
+    try {
+      await bot.sendMessage(chatId, "📤 Creating pull request...");
+      const branch = await getCurrentBranch();
+      await ensureBranchPushed(branch);
+      const headSha = await getHeadCommit();
+      const diffPreview = await buildDiffPreview({ ref: headSha });
+      const diffSection = diffPreview ? `\n\nDiff preview:\n${diffPreview}` : "";
+      const body = bodyRaw || `Created via Codex Telegram Bridge.${diffSection}`;
+      const pr = await createPullRequest({
+        title: titleRaw,
+        body,
+        head: branch,
+        base: config.targetBranch,
+      });
+      await bot.sendMessage(
+        chatId,
+        `✅ Pull request created.\nTitle: ${pr.title}\nURL: ${pr.html_url || pr.url}`
+      );
+    } catch (err) {
+      const msg = String(err?.message || err);
+      await bot.sendMessage(chatId, `❌ Failed to create PR:\n${msg}`);
+    } finally {
+      busy = false;
+    }
     return;
   }
 
@@ -438,6 +883,13 @@ After changes, summarize:
     if (hasImage) {
       imagePath = await saveIncomingImage(msg);
     }
+    const mediaInfo = await processAudioVideoAttachments(msg);
+    const mediaContext = mediaInfo.summary
+      ? mediaInfo.summary
+      : mediaInfo.warnings.join("\n");
+    const mediaPromptSection = mediaContext
+      ? mediaContext
+      : "No audio/video attachments.";
 
     const guardedPrompt = `
 You are working ONLY inside:
@@ -453,6 +905,9 @@ Response style requirements:
 
 Screenshot input:
 ${imagePath ? `User attached a screenshot at: ${imagePath}` : "No screenshot attached."}
+
+Audio/video transcription:
+${mediaPromptSection}
 
 Conversation context from this Telegram chat:
 ${historyContext}
@@ -475,6 +930,7 @@ ${userText || "(no caption text provided; use the screenshot context)"}
     addHistory(chatId, "assistant", result);
 
     let finalMessage = result;
+    let diffPreview = "";
     if (isPush) {
       const headAfter = await getHeadCommit();
       const ahead = await getAheadCount();
@@ -502,7 +958,13 @@ ${userText || "(no caption text provided; use the screenshot context)"}
         finalMessage =
           result +
           `\n\nPush status:\n- Ran: git -C ${config.targetRepoDir} push ${config.targetRemote} ${config.targetBranch}\n- Result: success`;
+        diffPreview = await buildDiffPreview({ ref: headAfter });
+        monitorActionsAfterPush(chatId, headAfter).catch((err) =>
+          console.error("Failed to monitor Actions:", err)
+        );
       }
+    } else {
+      diffPreview = await buildDiffPreview();
     }
 
     if (isPush) {
@@ -522,6 +984,17 @@ ${userText || "(no caption text provided; use the screenshot context)"}
           },
         };
       }
+    }
+
+    if (diffPreview) {
+      const label = isPush
+        ? "Diff preview (latest commit):"
+        : "Diff preview (working tree):";
+      finalMessage += `\n\n${label}\n${diffPreview}`;
+    }
+
+    if (mediaPromptSection && mediaPromptSection !== "No audio/video attachments.") {
+      finalMessage += `\n\nMedia transcription:\n${mediaPromptSection}`;
     }
 
     await sendLongMessage(chatId, finalMessage, responseOptions);

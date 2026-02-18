@@ -39,11 +39,18 @@ export function parseConfig(env, cwd, currentFilePath) {
     parseOptionalString(env, "SESSION_STORE_PATH", "data/sessions.json")
   );
   const inputsSubdir = parseOptionalString(env, "BOT_INPUTS_SUBDIR", ".codex-inputs");
+  const aliasStorePath = path.resolve(
+    cwd,
+    parseOptionalString(env, "REPO_ALIAS_STORE_PATH", "data/repo-aliases.json")
+  );
 
   return {
     token: parseRequiredString(env, "TELEGRAM_BOT_TOKEN"),
     allowedUserId: parseRequiredNumber(env, "TELEGRAM_ALLOWED_USER_ID"),
     codexBin: parseOptionalString(env, "CODEX_BIN", "codex"),
+    githubToken: parseOptionalString(env, "GITHUB_TOKEN", ""),
+    openaiApiKey: parseOptionalString(env, "OPENAI_API_KEY", ""),
+    openaiTranscribeModel: parseOptionalString(env, "OPENAI_TRANSCRIBE_MODEL", "whisper-1"),
     targetRepoDir: repoDir,
     targetBranch: parseOptionalString(env, "TARGET_REPO_BRANCH", "main"),
     targetRemote: parseOptionalString(env, "TARGET_REPO_REMOTE", "origin"),
@@ -51,7 +58,9 @@ export function parseConfig(env, cwd, currentFilePath) {
     pushSandbox: parseOptionalString(env, "CODEX_PUSH_SANDBOX", "workspace-write"),
     sessionPath: sessionStore,
     inputsDir: path.resolve(repoDir, inputsSubdir),
+    inputsSubdir,
     primaryGitDir: path.resolve(repoDir, ".git"),
+    repoAliasStorePath: aliasStorePath,
     appDir: path.dirname(currentFilePath),
     telegramMax: parseOptionalNumber(env, "TELEGRAM_MAX_MESSAGE", 3900),
     historyTurns: parseOptionalNumber(env, "HISTORY_TURNS", 8),

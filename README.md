@@ -10,6 +10,11 @@ Telegram bot that forwards messages to Codex for work in a target repo, keeps sh
 - Safer `/push` flow with `/confirmpush` and `/cancelpush`.
 - Optional one-tap keyboard action: `/push commit and push`.
 - Push button appears only when there is real work not on remote.
+- Automatic diff preview in responses (working tree or latest commit).
+- `/pr` command to push the current branch and open a GitHub pull request.
+- Multi-repo aliases with `/repo` commands.
+- Voice and screen recordings transcribed automatically via OpenAI (when `OPENAI_API_KEY` is set).
+- Automatic GitHub Actions watch after `/confirmpush` (requires `GITHUB_TOKEN`).
 
 ## Requirements
 
@@ -88,6 +93,10 @@ Optional:
 - `HISTORY_TURNS` (default: `8`)
 - `HISTORY_STORE_LIMIT` (default: `24`)
 - `RESULT_STORE_LIMIT` (default: `6000`)
+- `GITHUB_TOKEN` (optional; GitHub PAT with `repo` scope for `/pr`)
+- `REPO_ALIAS_STORE_PATH` (optional; where `/repo` aliases are persisted)
+- `OPENAI_API_KEY` (optional; required for voice/video transcription)
+- `OPENAI_TRANSCRIBE_MODEL` (default: `whisper-1`)
 
 ## Telegram Commands
 
@@ -97,6 +106,26 @@ Optional:
 - `/push <description>`
 - `/confirmpush`
 - `/cancelpush`
+- `/pr <title> [| optional body]`
+- `/repo list`
+- `/repo add <alias> <path> [branch] [remote]`
+- `/repo use <alias>`
+- `/repo remove <alias>`
+
+## Repo Aliases
+
+Use `/repo` commands to manage multiple project roots without editing `.env`:
+
+- `/repo add <alias> <path> [branch] [remote]` – register another repo directory.
+- `/repo list` – show aliases and the active selection.
+- `/repo use <alias>` – switch the bot to that repo (clears chat memory).
+- `/repo remove <alias>` – delete an alias (default cannot be removed).
+
+Aliases are stored in `REPO_ALIAS_STORE_PATH` (default `data/repo-aliases.json`).
+
+## Audio/Video Attachments
+
+If you set `OPENAI_API_KEY`, voice notes, audio files, and screen recordings are sent to OpenAI’s transcription API (`OPENAI_TRANSCRIBE_MODEL`, default `whisper-1`). The transcribed text is appended to your Codex prompt and echoed back in the Telegram reply. Without the key, the bot warns you that audio/video could not be transcribed.
 
 Send a screenshot (photo or image document) with optional caption to include visual context in the Codex request.
 
