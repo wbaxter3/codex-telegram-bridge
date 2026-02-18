@@ -56,6 +56,7 @@ export function parseConfig(env, cwd, currentFilePath) {
     historyTurns: parseOptionalNumber(env, "HISTORY_TURNS", 8),
     historyStoreLimit: parseOptionalNumber(env, "HISTORY_STORE_LIMIT", 24),
     resultStoreLimit: parseOptionalNumber(env, "RESULT_STORE_LIMIT", 6000),
+    codexTimeoutMs: parseOptionalNumber(env, "CODEX_TIMEOUT_MS", 600000),
   };
 }
 

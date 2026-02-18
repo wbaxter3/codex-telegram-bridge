@@ -1,7 +1,7 @@
 import "dotenv/config";
 import TelegramBot from "node-telegram-bot-api";
 import { spawn } from "child_process";
-import { access, mkdir, readFile, writeFile } from "fs/promises";
+import { access, copyFile, mkdir, readFile, writeFile } from "fs/promises";
 import path from "path";
 import { loadConfig } from "./src/config.js";
 import {
@@ -26,8 +26,27 @@ const bot = new TelegramBot(config.token, { polling: true });
 async function loadSessions() {
   try {
     const raw = await readFile(config.sessionPath, "utf8");
-    sessions = JSON.parse(raw);
-  } catch {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Session store root must be an object.");
+    }
+    sessions = parsed;
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      sessions = {};
+      return;
+    }
+    try {
+      await mkdir(path.dirname(config.sessionPath), { recursive: true });
+      const backupPath = `${config.sessionPath}.corrupt-${Date.now()}.json`;
+      await copyFile(config.sessionPath, backupPath);
+      console.error(
+        `Session store was unreadable. Backed up original to: ${backupPath}`
+      );
+    } catch (backupError) {
+      console.error("Failed to back up unreadable session store.", backupError);
+    }
+    console.error("Failed to load session store. Starting with empty sessions.", error);
     sessions = {};
   }
 }
@@ -88,6 +107,7 @@ async function sendLongMessage(chatId, text, lastMessageOptions = {}) {
 
 function runCodex(promptText, sandboxMode = config.defaultSandbox) {
   return new Promise((resolve, reject) => {
+    let finished = false;
     const args = [
       "exec",
       "--cd",
@@ -109,11 +129,34 @@ function runCodex(promptText, sandboxMode = config.defaultSandbox) {
     let out = "";
     let err = "";
 
-    child.stdout.on("data", (d) => (out += d.toString()));
-    child.stderr.on("data", (d) => (err += d.toString()));
+    const timeoutId = setTimeout(() => {
+      if (finished) return;
+      finished = true;
+      child.kill("SIGTERM");
+      reject(
+        new Error(
+          `codex timed out after ${config.codexTimeoutMs}ms. Increase CODEX_TIMEOUT_MS if needed.`
+        )
+      );
+    }, config.codexTimeoutMs);
 
-    child.on("error", (e) => reject(e));
+    child.stdout.on("data", (d) => {
+      out += d.toString();
+    });
+    child.stderr.on("data", (d) => {
+      err += d.toString();
+    });
+
+    child.on("error", (e) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeoutId);
+      reject(e);
+    });
     child.on("close", (code) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeoutId);
       if (code !== 0) {
         reject(new Error(err || `codex exited with code ${code}`));
       } else {

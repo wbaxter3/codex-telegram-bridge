@@ -1,5 +1,5 @@
 {
-  "name": "kinetiv-telegram",
+  "name": "codex-telegram-bridge",
   "version": "1.0.0",
   "description": "Telegram bridge for Codex with stateful chat and one-tap commit/push flow",
   "type": "module",

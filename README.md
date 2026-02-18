@@ -18,6 +18,24 @@ Telegram bot that forwards messages to Codex for work in a target repo, keeps sh
 - Telegram bot token from BotFather
 - A local git repo to operate on
 
+## Create Telegram Bot
+
+1. Open Telegram and message [@BotFather](https://t.me/BotFather).
+2. Run `/newbot` and follow prompts (bot name + username ending in `bot`).
+3. Copy the bot token BotFather returns.
+4. Find your numeric Telegram user ID (needed for allowlist):
+   - Message [@userinfobot](https://t.me/userinfobot), or
+   - Message your bot once, then inspect `msg.from.id` in logs if you temporarily log incoming updates.
+5. Set required `.env` values:
+   - `TELEGRAM_BOT_TOKEN=<token from BotFather>`
+   - `TELEGRAM_ALLOWED_USER_ID=<your numeric user id>`
+   - `TARGET_REPO_DIR=<absolute path to your project repo>`
+6. Start the bot with `npm run dev`.
+7. In Telegram, open a DM with your bot and send `/start`.
+8. Verify allowlist works:
+   - Your account should get responses.
+   - Other users should be ignored.
+
 ## Setup
 
 1. Install dependencies:
@@ -46,6 +64,7 @@ Optional:
 - `CODEX_DEFAULT_SANDBOX` (default: `workspace-write`)
 - `CODEX_PUSH_SANDBOX` (default: `workspace-write`)
 - `TELEGRAM_MAX_MESSAGE` (default: `3900`)
+- `CODEX_TIMEOUT_MS` (default: `600000`)
 - `HISTORY_TURNS` (default: `8`)
 - `HISTORY_STORE_LIMIT` (default: `24`)
 - `RESULT_STORE_LIMIT` (default: `6000`)
@@ -68,11 +87,19 @@ Send a screenshot (photo or image document) with optional caption to include vis
 - If a `.git-codex` repo is detected ahead of your main repo, push is blocked to avoid split history.
 - Default sandbox mode for both standard and push flows is `workspace-write`.
 - `CODEX_PUSH_SANDBOX=danger-full-access` is optional and should only be enabled when you trust prompts and need elevated git behavior.
+- Long-running Codex invocations are terminated after `CODEX_TIMEOUT_MS`.
 - Treat this bot as privileged automation. It can execute Codex actions against your target repository.
 
 ## Testing
 
 - `npm test`
+
+## OSS Project Files
+
+- License: `LICENSE`
+- Contribution guide: `CONTRIBUTING.md`
+- Security policy: `SECURITY.md`
+- Code of conduct: `CODE_OF_CONDUCT.md`
 
 ## Manual Smoke Test
 

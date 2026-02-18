@@ -15,6 +15,7 @@ test("parseConfig uses defaults for optional values", () => {
   assert.equal(cfg.pushSandbox, "workspace-write");
   assert.equal(cfg.sessionPath, "/app/data/sessions.json");
   assert.equal(cfg.inputsDir, "/tmp/repo/.codex-inputs");
+  assert.equal(cfg.codexTimeoutMs, 600000);
 });
 
 test("parseConfig throws on missing required env", () => {
@@ -32,6 +33,7 @@ test("parseConfig supports overrides", () => {
       TARGET_REPO_REMOTE: "upstream",
       SESSION_STORE_PATH: "state/sessions.json",
       HISTORY_TURNS: "12",
+      CODEX_TIMEOUT_MS: "45000",
     },
     "/app",
     "/app/src/config.js"
@@ -40,4 +42,5 @@ test("parseConfig supports overrides", () => {
   assert.equal(cfg.targetRemote, "upstream");
   assert.equal(cfg.sessionPath, "/app/state/sessions.json");
   assert.equal(cfg.historyTurns, 12);
+  assert.equal(cfg.codexTimeoutMs, 45000);
 });
