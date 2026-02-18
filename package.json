@@ -1,0 +1,20 @@
+{
+  "name": "kinetiv-telegram",
+  "version": "1.0.0",
+  "description": "Telegram bridge for Codex with stateful chat and one-tap commit/push flow",
+  "type": "module",
+  "main": "bot.js",
+  "scripts": {
+    "test": "node --test \"src/**/*.test.js\"",
+    "dev": "node --watch bot.js",
+    "start": "node bot.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "node-telegram-bot-api": "^0.67.0",
+    "p-limit": "^7.3.0"
+  }
+}
