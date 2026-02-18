@@ -18,6 +18,19 @@ Telegram bot that forwards messages to Codex for work in a target repo, keeps sh
 - Telegram bot token from BotFather
 - A local git repo to operate on
 
+## Codex CLI Setup
+
+If `codex` is not already installed and logged in on this machine, do this once:
+
+1. Install the Codex CLI.
+2. Log in:
+   - `codex login`
+   - Or API key mode: `printenv OPENAI_API_KEY | codex login --with-api-key`
+3. Verify login:
+   - `codex login status`
+
+The bridge does not store OpenAI credentials in this repo. It uses your local `codex` CLI session when running `codex exec`.
+
 ## Create Telegram Bot
 
 1. Open Telegram and message [@BotFather](https://t.me/BotFather).
