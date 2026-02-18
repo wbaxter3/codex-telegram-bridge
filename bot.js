@@ -117,7 +117,7 @@ function runCodex(promptText, sandboxMode = config.defaultSandbox) {
       promptText,
     ];
 
-    const child = spawn("codex", args, {
+    const child = spawn(config.codexBin, args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...process.env,

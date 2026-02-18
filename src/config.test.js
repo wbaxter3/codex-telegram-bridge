@@ -12,6 +12,7 @@ test("parseConfig uses defaults for optional values", () => {
   const cfg = parseConfig(baseEnv, "/app", "/app/src/config.js");
   assert.equal(cfg.targetBranch, "main");
   assert.equal(cfg.targetRemote, "origin");
+  assert.equal(cfg.codexBin, "codex");
   assert.equal(cfg.pushSandbox, "workspace-write");
   assert.equal(cfg.sessionPath, "/app/data/sessions.json");
   assert.equal(cfg.inputsDir, "/tmp/repo/.codex-inputs");
@@ -31,6 +32,7 @@ test("parseConfig supports overrides", () => {
       ...baseEnv,
       TARGET_REPO_BRANCH: "develop",
       TARGET_REPO_REMOTE: "upstream",
+      CODEX_BIN: "/usr/local/bin/codex",
       SESSION_STORE_PATH: "state/sessions.json",
       HISTORY_TURNS: "12",
       CODEX_TIMEOUT_MS: "45000",
@@ -40,6 +42,7 @@ test("parseConfig supports overrides", () => {
   );
   assert.equal(cfg.targetBranch, "develop");
   assert.equal(cfg.targetRemote, "upstream");
+  assert.equal(cfg.codexBin, "/usr/local/bin/codex");
   assert.equal(cfg.sessionPath, "/app/state/sessions.json");
   assert.equal(cfg.historyTurns, 12);
   assert.equal(cfg.codexTimeoutMs, 45000);

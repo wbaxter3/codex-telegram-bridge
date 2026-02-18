@@ -43,6 +43,7 @@ export function parseConfig(env, cwd, currentFilePath) {
   return {
     token: parseRequiredString(env, "TELEGRAM_BOT_TOKEN"),
     allowedUserId: parseRequiredNumber(env, "TELEGRAM_ALLOWED_USER_ID"),
+    codexBin: parseOptionalString(env, "CODEX_BIN", "codex"),
     targetRepoDir: repoDir,
     targetBranch: parseOptionalString(env, "TARGET_REPO_BRANCH", "main"),
     targetRemote: parseOptionalString(env, "TARGET_REPO_REMOTE", "origin"),

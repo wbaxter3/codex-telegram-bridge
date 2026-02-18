@@ -17,6 +17,7 @@ Telegram bot that forwards messages to Codex for work in a target repo, keeps sh
 - `codex` CLI available on PATH
 - Telegram bot token from BotFather
 - A local git repo to operate on
+- Docker + Docker Compose (optional, for containerized setup)
 
 ## Codex CLI Setup
 
@@ -56,7 +57,11 @@ The bridge does not store OpenAI credentials in this repo. It uses your local `c
 2. Copy env template:
    - `cp .env.example .env`
 3. Fill `.env` values.
-4. Start bot:
+4. To let the bot complete commit + push flows from `/confirmpush`, set:
+   - `CODEX_DEFAULT_SANDBOX=workspace-write`
+   - `CODEX_PUSH_SANDBOX=danger-full-access`
+   - Keep `CODEX_PUSH_SANDBOX=workspace-write` if you do not want Codex push-mode operations to have elevated git access.
+5. Start bot:
    - Dev hot reload: `npm run dev`
    - Normal: `npm start`
 
@@ -74,8 +79,10 @@ Optional:
 - `TARGET_REPO_REMOTE` (default: `origin`)
 - `SESSION_STORE_PATH` (default: `data/sessions.json`)
 - `BOT_INPUTS_SUBDIR` (default: `.codex-inputs`)
+- `CODEX_BIN` (default: `codex`)
 - `CODEX_DEFAULT_SANDBOX` (default: `workspace-write`)
 - `CODEX_PUSH_SANDBOX` (default: `workspace-write`)
+  - Set `CODEX_PUSH_SANDBOX=danger-full-access` if your runtime blocks `.git` writes and you want `/confirmpush` to complete commit + push in the bot flow.
 - `TELEGRAM_MAX_MESSAGE` (default: `3900`)
 - `CODEX_TIMEOUT_MS` (default: `600000`)
 - `HISTORY_TURNS` (default: `8`)
