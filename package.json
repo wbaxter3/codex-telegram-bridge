@@ -14,7 +14,6 @@
   "license": "ISC",
   "dependencies": {
     "dotenv": "^17.3.1",
-    "node-telegram-bot-api": "^0.67.0",
-    "p-limit": "^7.3.0"
+    "node-telegram-bot-api": "^0.67.0"
   }
 }

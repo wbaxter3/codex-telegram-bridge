@@ -47,7 +47,7 @@ export function parseConfig(env, cwd, currentFilePath) {
     targetBranch: parseOptionalString(env, "TARGET_REPO_BRANCH", "main"),
     targetRemote: parseOptionalString(env, "TARGET_REPO_REMOTE", "origin"),
     defaultSandbox: parseOptionalString(env, "CODEX_DEFAULT_SANDBOX", "workspace-write"),
-    pushSandbox: parseOptionalString(env, "CODEX_PUSH_SANDBOX", "danger-full-access"),
+    pushSandbox: parseOptionalString(env, "CODEX_PUSH_SANDBOX", "workspace-write"),
     sessionPath: sessionStore,
     inputsDir: path.resolve(repoDir, inputsSubdir),
     primaryGitDir: path.resolve(repoDir, ".git"),

@@ -44,7 +44,7 @@ Optional:
 - `SESSION_STORE_PATH` (default: `data/sessions.json`)
 - `BOT_INPUTS_SUBDIR` (default: `.codex-inputs`)
 - `CODEX_DEFAULT_SANDBOX` (default: `workspace-write`)
-- `CODEX_PUSH_SANDBOX` (default: `danger-full-access`)
+- `CODEX_PUSH_SANDBOX` (default: `workspace-write`)
 - `TELEGRAM_MAX_MESSAGE` (default: `3900`)
 - `HISTORY_TURNS` (default: `8`)
 - `HISTORY_STORE_LIMIT` (default: `24`)
@@ -66,7 +66,19 @@ Send a screenshot (photo or image document) with optional caption to include vis
 - Bot only responds in private chats from `TELEGRAM_ALLOWED_USER_ID`.
 - In push mode, Codex is instructed to commit only; the bot performs the final `git push`.
 - If a `.git-codex` repo is detected ahead of your main repo, push is blocked to avoid split history.
+- Default sandbox mode for both standard and push flows is `workspace-write`.
+- `CODEX_PUSH_SANDBOX=danger-full-access` is optional and should only be enabled when you trust prompts and need elevated git behavior.
+- Treat this bot as privileged automation. It can execute Codex actions against your target repository.
 
 ## Testing
 
 - `npm test`
+
+## Manual Smoke Test
+
+1. Start the bot with `npm run dev`.
+2. Send a normal request that edits files in `TARGET_REPO_DIR`.
+3. Confirm the `/push commit and push` keyboard button appears in the same final response.
+4. Tap `/push commit and push` and verify bot asks for `/confirmpush`.
+5. Tap `/cancelpush` and verify no commit/push occurs.
+6. Repeat, then tap `/confirmpush` and verify commit + push status appears.

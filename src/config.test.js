@@ -12,6 +12,7 @@ test("parseConfig uses defaults for optional values", () => {
   const cfg = parseConfig(baseEnv, "/app", "/app/src/config.js");
   assert.equal(cfg.targetBranch, "main");
   assert.equal(cfg.targetRemote, "origin");
+  assert.equal(cfg.pushSandbox, "workspace-write");
   assert.equal(cfg.sessionPath, "/app/data/sessions.json");
   assert.equal(cfg.inputsDir, "/tmp/repo/.codex-inputs");
 });
