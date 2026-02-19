@@ -884,6 +884,14 @@ After changes, summarize:
       imagePath = await saveIncomingImage(msg);
     }
     const mediaInfo = await processAudioVideoAttachments(msg);
+    if (mediaInfo.summary) {
+      await bot.sendMessage(chatId, `🎙️ Transcription:\n${mediaInfo.summary}`);
+    } else if (mediaInfo.warnings.length) {
+      await bot.sendMessage(
+        chatId,
+        `⚠️ Could not transcribe audio/video:\n${mediaInfo.warnings.join("\n")}`
+      );
+    }
     const mediaContext = mediaInfo.summary
       ? mediaInfo.summary
       : mediaInfo.warnings.join("\n");
