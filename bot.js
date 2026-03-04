@@ -938,7 +938,6 @@ ${userText || "(no caption text provided; use the screenshot context)"}
     addHistory(chatId, "assistant", result);
 
     let finalMessage = result;
-    let diffPreview = "";
     if (isPush) {
       const headAfter = await getHeadCommit();
       const ahead = await getAheadCount();
@@ -966,13 +965,11 @@ ${userText || "(no caption text provided; use the screenshot context)"}
         finalMessage =
           result +
           `\n\nPush status:\n- Ran: git -C ${config.targetRepoDir} push ${config.targetRemote} ${config.targetBranch}\n- Result: success`;
-        diffPreview = await buildDiffPreview({ ref: headAfter });
         monitorActionsAfterPush(chatId, headAfter).catch((err) =>
           console.error("Failed to monitor Actions:", err)
         );
       }
     } else {
-      diffPreview = await buildDiffPreview();
     }
 
     if (isPush) {
@@ -992,13 +989,6 @@ ${userText || "(no caption text provided; use the screenshot context)"}
           },
         };
       }
-    }
-
-    if (diffPreview) {
-      const label = isPush
-        ? "Diff preview (latest commit):"
-        : "Diff preview (working tree):";
-      finalMessage += `\n\n${label}\n${diffPreview}`;
     }
 
     if (mediaPromptSection && mediaPromptSection !== "No audio/video attachments.") {
