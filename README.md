@@ -14,7 +14,6 @@ Telegram bot that forwards messages to Codex for work in a target repo, keeps sh
 - `/pr` command to push the current branch and open a GitHub pull request.
 - Multi-repo aliases with `/repo` commands.
 - Voice and screen recordings transcribed automatically via OpenAI (when `OPENAI_API_KEY` is set).
-- Automatic GitHub Actions watch after `/confirmpush` (requires `GITHUB_TOKEN`).
 
 ## Requirements
 

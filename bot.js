@@ -1,7 +1,6 @@
 import "dotenv/config";
 import TelegramBot from "node-telegram-bot-api";
 import { spawn } from "child_process";
-import https from "https";
 import { createReadStream } from "fs";
 import { access, copyFile, mkdir, readFile, writeFile } from "fs/promises";
 import path from "path";
@@ -201,8 +200,6 @@ async function runGit(args) {
 
 const MAX_DIFF_PREVIEW_CHARS = 3500;
 const OPENAI_TRANSCRIBE_URL = "https://api.openai.com/v1/audio/transcriptions";
-const ACTIONS_POLL_INTERVAL_MS = 10000;
-const ACTIONS_POLL_ATTEMPTS = 12;
 const GITHUB_API = "https://api.github.com";
 
 async function buildDiffPreview({ ref = null } = {}) {
@@ -474,57 +471,6 @@ async function createPullRequest({ title, body, head, base }) {
     throw new Error(message);
   }
   return data;
-}
-
-async function pollActionsRun(headSha) {
-  if (!config.githubToken) return null;
-  const slug = await getRepoSlug();
-  for (let attempt = 0; attempt < ACTIONS_POLL_ATTEMPTS; attempt += 1) {
-    const response = await fetch(
-      `${GITHUB_API}/repos/${slug}/actions/runs?per_page=10&branch=${config.targetBranch}`,
-      {
-        headers: {
-          Authorization: `Bearer ${config.githubToken}`,
-          "User-Agent": "codex-telegram-bridge",
-          Accept: "application/vnd.github+json",
-        },
-      }
-    );
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data?.message || "Failed to query workflow runs.");
-    }
-    const run = (data.workflow_runs || []).find((r) => r.head_sha === headSha);
-    if (run) {
-      if (run.status === "completed") {
-        return run;
-      }
-    }
-    await new Promise((resolve) => setTimeout(resolve, ACTIONS_POLL_INTERVAL_MS));
-  }
-  return null;
-}
-
-async function monitorActionsAfterPush(chatId, headSha) {
-  if (!config.githubToken) return;
-  try {
-    const run = await pollActionsRun(headSha);
-    if (!run) {
-      await bot.sendMessage(
-        chatId,
-        "⚠️ GitHub Actions update timed out or no run detected for this commit."
-      );
-      return;
-    }
-    const conclusion = run.conclusion || "unknown";
-    const statusEmoji = conclusion === "success" ? "✅" : conclusion === "failure" ? "❌" : "⚠️";
-    await bot.sendMessage(
-      chatId,
-      `${statusEmoji} GitHub Actions (${run.name || "workflow"}) ${conclusion}.\n${run.html_url || run.url}`
-    );
-  } catch (error) {
-    console.error("Actions monitor failed:", error);
-  }
 }
 
 async function getAheadCount() {
@@ -965,9 +911,6 @@ ${userText || "(no caption text provided; use the screenshot context)"}
         finalMessage =
           result +
           `\n\nPush status:\n- Ran: git -C ${config.targetRepoDir} push ${config.targetRemote} ${config.targetBranch}\n- Result: success`;
-        monitorActionsAfterPush(chatId, headAfter).catch((err) =>
-          console.error("Failed to monitor Actions:", err)
-        );
       }
     } else {
     }
