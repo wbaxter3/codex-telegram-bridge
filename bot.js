@@ -690,7 +690,9 @@ bot.on("message", async (msg) => {
     const session = getSession(chatId);
     session.pendingPush = null;
     await saveSessions();
-    await bot.sendMessage(chatId, "Pending push canceled.");
+    await bot.sendMessage(chatId, "Pending push canceled.", {
+      reply_markup: { remove_keyboard: true },
+    });
     return;
   }
 
@@ -753,7 +755,9 @@ bot.on("message", async (msg) => {
       : text;
 
   if (isConfirmPush && !session.pendingPush) {
-    await bot.sendMessage(chatId, "No pending push. Use /push <description> first.");
+    await bot.sendMessage(chatId, "No pending push. Use /push <description> first.", {
+      reply_markup: { remove_keyboard: true },
+    });
     return;
   }
 
@@ -921,7 +925,9 @@ ${userText || "(no caption text provided; use the screenshot context)"}
     await saveSessions();
 
     let responseOptions = {};
-    if (!isPush) {
+    if (isPush) {
+      responseOptions = { reply_markup: { remove_keyboard: true } };
+    } else {
       const hasWork = await hasWorkNotOnRemote();
       if (hasWork) {
         responseOptions = {
