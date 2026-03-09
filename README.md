@@ -10,7 +10,6 @@ Telegram bot that forwards messages to Codex for work in a target repo, keeps sh
 - Safer `/push` flow with `/confirmpush` and `/cancelpush`.
 - Optional one-tap keyboard action: `/push commit and push`.
 - Push button appears only when there is real work not on remote.
-- Automatic diff preview in responses (working tree or latest commit).
 - `/pr` command to push the current branch and open a GitHub pull request.
 - Multi-repo aliases with `/repo` commands.
 - Voice and screen recordings transcribed automatically via OpenAI (when `OPENAI_API_KEY` is set).
@@ -21,7 +20,6 @@ Telegram bot that forwards messages to Codex for work in a target repo, keeps sh
 - `codex` CLI available on PATH
 - Telegram bot token from BotFather
 - A local git repo to operate on
-- Docker + Docker Compose (optional, for containerized setup)
 
 ## Codex CLI Setup
 

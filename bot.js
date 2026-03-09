@@ -2,14 +2,29 @@ import "dotenv/config";
 import TelegramBot from "node-telegram-bot-api";
 import { spawn } from "child_process";
 import { createReadStream } from "fs";
-import { access, copyFile, mkdir, readFile, writeFile } from "fs/promises";
+import { access, mkdir } from "fs/promises";
 import path from "path";
 import { loadConfig } from "./src/config.js";
+import { loadJsonObject, saveJsonObjectAtomic } from "./src/json-store.js";
+import { buildMediaPromptSection, buildMediaReply, hasIncomingMedia } from "./src/media-utils.js";
 import {
   chunkTextByParagraph,
   isOneTapPushCommand,
   sanitizePushNarration,
 } from "./src/message-utils.js";
+import {
+  REMOVE_KEYBOARD,
+  clearPendingPush,
+  createConfirmPushReplyOptions,
+  getPostRunReplyOptions,
+  resolvePushRequest,
+  stagePendingPush,
+} from "./src/push-flow.js";
+import {
+  RESERVED_ALIASES,
+  getAliasListMessage as formatAliasListMessage,
+  normalizeAliasName,
+} from "./src/repo-alias-utils.js";
 
 const config = loadConfig();
 const defaultRepoDef = {
@@ -17,7 +32,6 @@ const defaultRepoDef = {
   branch: config.targetBranch,
   remote: config.targetRemote,
 };
-const RESERVED_ALIASES = new Set(["default"]);
 let repoAliasStore = { aliases: {}, active: null };
 
 // Simple single-flight lock (prevents overlapping Codex runs)
@@ -32,37 +46,21 @@ if (!config.token || !config.allowedUserId) {
 const bot = new TelegramBot(config.token, { polling: true });
 
 async function loadSessions() {
-  try {
-    const raw = await readFile(config.sessionPath, "utf8");
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("Session store root must be an object.");
-    }
-    sessions = parsed;
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      sessions = {};
-      return;
-    }
-    try {
-      await mkdir(path.dirname(config.sessionPath), { recursive: true });
-      const backupPath = `${config.sessionPath}.corrupt-${Date.now()}.json`;
-      await copyFile(config.sessionPath, backupPath);
-      console.error(
-        `Session store was unreadable. Backed up original to: ${backupPath}`
-      );
-    } catch (backupError) {
-      console.error("Failed to back up unreadable session store.", backupError);
-    }
-    console.error("Failed to load session store. Starting with empty sessions.", error);
-    sessions = {};
-  }
+  sessions = await loadJsonObject(config.sessionPath, {}, {
+    backupOnCorrupt: true,
+    onCorrupt(backupPath, error) {
+      if (backupPath) {
+        console.error(`Session store was unreadable. Backed up original to: ${backupPath}`);
+      } else {
+        console.error("Failed to back up unreadable session store.", error);
+      }
+      console.error("Failed to load session store. Starting with empty sessions.", error);
+    },
+  });
 }
 
 async function saveSessions() {
-  const dir = path.dirname(config.sessionPath);
-  await mkdir(dir, { recursive: true });
-  await writeFile(config.sessionPath, JSON.stringify(sessions, null, 2), "utf8");
+  await saveJsonObjectAtomic(config.sessionPath, sessions);
 }
 
 async function ensureInputsDir() {
@@ -216,17 +214,8 @@ async function buildDiffPreview({ ref = null } = {}) {
   return trimmed;
 }
 
-function normalizeAliasName(name) {
-  return String(name || "").trim().toLowerCase();
-}
-
 async function saveRepoAliasStore() {
-  await mkdir(path.dirname(config.repoAliasStorePath), { recursive: true });
-  await writeFile(
-    config.repoAliasStorePath,
-    JSON.stringify(repoAliasStore, null, 2),
-    "utf8"
-  );
+  await saveJsonObjectAtomic(config.repoAliasStorePath, repoAliasStore);
 }
 
 async function applyRepoSelection(def, aliasName, { persist = true, resetSessions = true } = {}) {
@@ -252,21 +241,19 @@ async function applyRepoSelection(def, aliasName, { persist = true, resetSession
 }
 
 async function loadRepoAliasStore() {
-  try {
-    const raw = await readFile(config.repoAliasStorePath, "utf8");
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object") {
-      repoAliasStore = {
-        aliases: parsed.aliases || {},
-        active: parsed.active || null,
-      };
+  const parsed = await loadJsonObject(
+    config.repoAliasStorePath,
+    { aliases: {}, active: null },
+    {
+      onCorrupt(_backupPath, error) {
+        console.error("Failed to read repo alias store:", error);
+      },
     }
-  } catch (error) {
-    if (error?.code !== "ENOENT") {
-      console.error("Failed to read repo alias store:", error);
-    }
-    repoAliasStore = { aliases: {}, active: null };
-  }
+  );
+  repoAliasStore = {
+    aliases: parsed.aliases || {},
+    active: parsed.active || null,
+  };
   const active = repoAliasStore.active;
   if (active && repoAliasStore.aliases[active]) {
     await applyRepoSelection(repoAliasStore.aliases[active], active, {
@@ -291,19 +278,8 @@ async function removeRepoAlias(alias) {
   }
 }
 
-function formatAliasLine(name, def, isActive) {
-  return `${isActive ? "✅" : "•"} ${name} -> ${def.dir} [branch: ${def.branch || "main"}, remote: ${def.remote || "origin"}]`;
-}
-
-function getAliasListMessage() {
-  const active = repoAliasStore.active || "default";
-  const lines = [
-    formatAliasLine("default", defaultRepoDef, active === "default"),
-  ];
-  Object.entries(repoAliasStore.aliases).forEach(([name, def]) => {
-    lines.push(formatAliasLine(name, def, active === name));
-  });
-  return lines.join("\n");
+function getRepoAliasListMessage() {
+  return formatAliasListMessage(defaultRepoDef, repoAliasStore.aliases, repoAliasStore.active);
 }
 
 async function handleRepoCommand(chatId, text) {
@@ -319,7 +295,7 @@ async function handleRepoCommand(chatId, text) {
   }
 
   if (action === "list") {
-    await bot.sendMessage(chatId, getAliasListMessage());
+    await bot.sendMessage(chatId, getRepoAliasListMessage());
     return;
   }
 
@@ -613,11 +589,7 @@ bot.on("message", async (msg) => {
     (msg.document &&
       typeof msg.document.mime_type === "string" &&
       msg.document.mime_type.startsWith("image/"));
-  const hasMedia =
-    Boolean(msg.voice) ||
-    Boolean(msg.audio) ||
-    Boolean(msg.video) ||
-    Boolean(msg.video_note);
+  const hasMedia = hasIncomingMedia(msg);
 
   const text = (msg.text || msg.caption || "").trim();
   if (!text && !hasImage && !hasMedia) return;
@@ -663,19 +635,14 @@ bot.on("message", async (msg) => {
       return;
     }
     const session = getSession(chatId);
-    session.pendingPush = {
-      description,
-      createdAt: new Date().toISOString(),
-    };
+    stagePendingPush(session, description, new Date().toISOString());
     await saveSessions();
     if (isOneTapPush) {
-      await bot.sendMessage(chatId, "Push staged. Confirm to run commit + push:", {
-        reply_markup: {
-          keyboard: [[{ text: "/confirmpush" }, { text: "/cancelpush" }]],
-          resize_keyboard: true,
-          one_time_keyboard: true,
-        },
-      });
+      await bot.sendMessage(
+        chatId,
+        "Push staged. Confirm to run commit + push:",
+        createConfirmPushReplyOptions()
+      );
       return;
     }
 
@@ -688,11 +655,9 @@ bot.on("message", async (msg) => {
 
   if (text === "/cancelpush") {
     const session = getSession(chatId);
-    session.pendingPush = null;
+    clearPendingPush(session);
     await saveSessions();
-    await bot.sendMessage(chatId, "Pending push canceled.", {
-      reply_markup: { remove_keyboard: true },
-    });
+    await bot.sendMessage(chatId, "Pending push canceled.", REMOVE_KEYBOARD);
     return;
   }
 
@@ -745,19 +710,12 @@ bot.on("message", async (msg) => {
     return;
   }
 
-  const isConfirmPush = text === "/confirmpush";
   const session = getSession(chatId);
-  const isPush = isConfirmPush && !!session.pendingPush;
-  const userText = isPush
-    ? session.pendingPush.description
-    : isConfirmPush
-      ? ""
-      : text;
+  const pushRequest = resolvePushRequest(text, session.pendingPush);
+  const { isConfirmPush, isPush, userText, missingPendingPush } = pushRequest;
 
-  if (isConfirmPush && !session.pendingPush) {
-    await bot.sendMessage(chatId, "No pending push. Use /push <description> first.", {
-      reply_markup: { remove_keyboard: true },
-    });
+  if (missingPendingPush) {
+    await bot.sendMessage(chatId, "No pending push. Use /push <description> first.", REMOVE_KEYBOARD);
     return;
   }
 
@@ -834,20 +792,11 @@ After changes, summarize:
       imagePath = await saveIncomingImage(msg);
     }
     const mediaInfo = await processAudioVideoAttachments(msg);
-    if (mediaInfo.summary) {
-      await bot.sendMessage(chatId, `🎙️ Transcription:\n${mediaInfo.summary}`);
-    } else if (mediaInfo.warnings.length) {
-      await bot.sendMessage(
-        chatId,
-        `⚠️ Could not transcribe audio/video:\n${mediaInfo.warnings.join("\n")}`
-      );
+    const mediaReply = buildMediaReply(mediaInfo);
+    if (mediaReply) {
+      await bot.sendMessage(chatId, mediaReply);
     }
-    const mediaContext = mediaInfo.summary
-      ? mediaInfo.summary
-      : mediaInfo.warnings.join("\n");
-    const mediaPromptSection = mediaContext
-      ? mediaContext
-      : "No audio/video attachments.";
+    const mediaPromptSection = buildMediaPromptSection(mediaInfo);
 
     const guardedPrompt = `
 You are working ONLY inside:
@@ -920,25 +869,12 @@ ${userText || "(no caption text provided; use the screenshot context)"}
     }
 
     if (isPush) {
-      session.pendingPush = null;
+      clearPendingPush(session);
     }
     await saveSessions();
 
-    let responseOptions = {};
-    if (isPush) {
-      responseOptions = { reply_markup: { remove_keyboard: true } };
-    } else {
-      const hasWork = await hasWorkNotOnRemote();
-      if (hasWork) {
-        responseOptions = {
-          reply_markup: {
-            keyboard: [[{ text: "/push commit and push" }]],
-            resize_keyboard: true,
-            one_time_keyboard: false,
-          },
-        };
-      }
-    }
+    const hasWork = isPush ? false : await hasWorkNotOnRemote();
+    const responseOptions = getPostRunReplyOptions({ isPush, hasWork });
 
     if (mediaPromptSection && mediaPromptSection !== "No audio/video attachments.") {
       finalMessage += `\n\nMedia transcription:\n${mediaPromptSection}`;
@@ -947,7 +883,7 @@ ${userText || "(no caption text provided; use the screenshot context)"}
     await sendLongMessage(chatId, finalMessage, responseOptions);
   } catch (e) {
     if (isConfirmPush) {
-      session.pendingPush = null;
+      clearPendingPush(session);
       await saveSessions();
     }
     const msgText = String(e?.message || e).slice(0, config.telegramMax);
