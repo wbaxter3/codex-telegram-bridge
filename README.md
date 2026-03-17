@@ -1,11 +1,12 @@
 # Codex Telegram Bridge
 
-Telegram bot that forwards messages to Codex for work in a target repo, keeps short chat memory per user, supports screenshot intake, and offers a staged commit+push flow from chat.
+Telegram bot that forwards messages to Codex for work in a target repo, keeps short chat memory per user, supports screenshot intake, persists repo-scoped long-term memory, and offers a staged commit+push flow from chat.
 
 ## Features
 
 - Private, allowlisted Telegram access.
 - Stateful conversation memory persisted to disk.
+- Persistent repo-scoped long-term memory with `/remember`, `/memories`, and `/forget`.
 - Screenshot uploads passed to Codex via local file path.
 - Safer `/push` flow with `/confirmpush` and `/cancelpush`.
 - Optional one-tap keyboard action: `/push commit and push`.
@@ -92,6 +93,7 @@ Optional:
 - `RESULT_STORE_LIMIT` (default: `6000`)
 - `GITHUB_TOKEN` (optional; GitHub PAT with `repo` scope for `/pr`)
 - `REPO_ALIAS_STORE_PATH` (optional; where `/repo` aliases are persisted)
+- `REPO_MEMORY_STORE_PATH` (optional; where repo memories are persisted)
 - `OPENAI_API_KEY` (optional; required for voice/video transcription)
 - `OPENAI_TRANSCRIBE_MODEL` (default: `whisper-1`)
 
@@ -100,6 +102,9 @@ Optional:
 - `/start`
 - `/new` or `/clear`
 - `/state`
+- `/remember <fact>`
+- `/memories`
+- `/forget <id or text>`
 - `/push <description>`
 - `/confirmpush`
 - `/cancelpush`
@@ -119,6 +124,16 @@ Use `/repo` commands to manage multiple project roots without editing `.env`:
 - `/repo remove <alias>` – delete an alias (default cannot be removed).
 
 Aliases are stored in `REPO_ALIAS_STORE_PATH` (default `data/repo-aliases.json`).
+
+## Repo Memory
+
+Use repo memory when you want the bot to keep durable notes that survive `/new`, `/clear`, restarts, and repo switching:
+
+- `/remember <fact>` - save a preference, convention, or environment note for the active repo.
+- `/memories` - list saved notes for the active repo.
+- `/forget <id or text>` - remove a saved note by id or unique text match.
+
+Repo memory is scoped by active repo directory, so switching via `/repo use` keeps each project's notes separate. The bot also saves a couple of lightweight automatic notes after successful push and PR flows so recent shipped work can be recalled later.
 
 ## Audio/Video Attachments
 
@@ -151,7 +166,9 @@ Send a screenshot (photo or image document) with optional caption to include vis
 
 1. Start the bot with `npm run dev`.
 2. Send a normal request that edits files in `TARGET_REPO_DIR`.
-3. Confirm the `/push commit and push` keyboard button appears in the same final response.
-4. Tap `/push commit and push` and verify bot asks for `/confirmpush`.
-5. Tap `/cancelpush` and verify no commit/push occurs.
-6. Repeat, then tap `/confirmpush` and verify commit + push status appears.
+3. Send `/remember Use npm test before pushing` and verify `/memories` shows it.
+4. Send a normal request that edits files in `TARGET_REPO_DIR`.
+5. Confirm the `/push commit and push` keyboard button appears in the same final response.
+6. Tap `/push commit and push` and verify bot asks for `/confirmpush`.
+7. Tap `/cancelpush` and verify no commit/push occurs.
+8. Repeat, then tap `/confirmpush` and verify commit + push status appears.

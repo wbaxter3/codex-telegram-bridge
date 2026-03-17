@@ -20,6 +20,7 @@ test("parseConfig uses defaults for optional values", () => {
   assert.equal(cfg.pushSandbox, "workspace-write");
   assert.equal(cfg.sessionPath, "/app/data/sessions.json");
   assert.equal(cfg.inputsDir, "/tmp/repo/.codex-inputs");
+  assert.equal(cfg.repoMemoryStorePath, "/app/data/repo-memories.json");
   assert.equal(cfg.codexTimeoutMs, 600000);
 });
 
@@ -45,6 +46,7 @@ test("parseConfig supports overrides", () => {
       CODEX_TIMEOUT_MS: "45000",
       BOT_INPUTS_SUBDIR: "artifacts",
       REPO_ALIAS_STORE_PATH: "state/repos.json",
+      REPO_MEMORY_STORE_PATH: "state/memories.json",
     },
     "/app",
     "/app/src/config.js"
@@ -60,4 +62,5 @@ test("parseConfig supports overrides", () => {
   assert.equal(cfg.historyTurns, 12);
   assert.equal(cfg.codexTimeoutMs, 45000);
   assert.equal(cfg.repoAliasStorePath, "/app/state/repos.json");
+  assert.equal(cfg.repoMemoryStorePath, "/app/state/memories.json");
 });

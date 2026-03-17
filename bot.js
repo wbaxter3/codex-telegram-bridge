@@ -25,6 +25,15 @@ import {
   getAliasListMessage as formatAliasListMessage,
   normalizeAliasName,
 } from "./src/repo-alias-utils.js";
+import {
+  buildMemoryPromptSection,
+  createEmptyMemoryStore,
+  forgetRepoFact,
+  formatRepoMemories,
+  getRepoMemories,
+  normalizeMemoryText,
+  rememberRepoFact,
+} from "./src/repo-memory.js";
 
 const config = loadConfig();
 const defaultRepoDef = {
@@ -33,6 +42,7 @@ const defaultRepoDef = {
   remote: config.targetRemote,
 };
 let repoAliasStore = { aliases: {}, active: null };
+let repoMemoryStore = createEmptyMemoryStore();
 
 // Simple single-flight lock (prevents overlapping Codex runs)
 let busy = false;
@@ -61,6 +71,25 @@ async function loadSessions() {
 
 async function saveSessions() {
   await saveJsonObjectAtomic(config.sessionPath, sessions);
+}
+
+async function loadRepoMemoryStore() {
+  const parsed = await loadJsonObject(config.repoMemoryStorePath, createEmptyMemoryStore(), {
+    backupOnCorrupt: true,
+    onCorrupt(backupPath, error) {
+      if (backupPath) {
+        console.error(`Repo memory store was unreadable. Backed up original to: ${backupPath}`);
+      }
+      console.error("Failed to load repo memory store. Starting with empty repo memories.", error);
+    },
+  });
+  repoMemoryStore = {
+    repos: parsed.repos && typeof parsed.repos === "object" ? parsed.repos : {},
+  };
+}
+
+async function saveRepoMemoryStore() {
+  await saveJsonObjectAtomic(config.repoMemoryStorePath, repoMemoryStore);
 }
 
 async function ensureInputsDir() {
@@ -97,6 +126,29 @@ function buildHistoryContext(chatId) {
         `[${i + 1}] ${t.role.toUpperCase()} (${t.ts}):\n${t.content}`
     )
     .join("\n\n");
+}
+
+function getCurrentRepoMemories() {
+  return getRepoMemories(repoMemoryStore, config.targetRepoDir);
+}
+
+async function rememberCurrentRepoFact(text, meta = {}) {
+  const result = rememberRepoFact(
+    repoMemoryStore,
+    config.targetRepoDir,
+    text,
+    new Date().toISOString(),
+    meta
+  );
+  repoMemoryStore = result.store;
+  await saveRepoMemoryStore();
+  return result;
+}
+
+async function saveAutoRepoMemory(text, meta = {}) {
+  const normalized = normalizeMemoryText(text);
+  if (!normalized) return null;
+  return rememberCurrentRepoFact(normalized, { source: "auto", ...meta });
 }
 
 async function sendLongMessage(chatId, text, lastMessageOptions = {}) {
@@ -345,7 +397,7 @@ async function handleRepoCommand(chatId, text) {
       await applyRepoSelection(defaultRepoDef, null);
       await bot.sendMessage(
         chatId,
-        `Active repo set to default (${defaultRepoDef.dir}). Session memory cleared.`
+        `Active repo set to default (${defaultRepoDef.dir}). Session memory cleared; repo memories preserved.`
       );
       return;
     }
@@ -357,7 +409,7 @@ async function handleRepoCommand(chatId, text) {
     await applyRepoSelection(aliasConfig, aliasName);
     await bot.sendMessage(
       chatId,
-      `Active repo set to '${aliasName}' (${aliasConfig.dir}). Session memory cleared.`
+      `Active repo set to '${aliasName}' (${aliasConfig.dir}). Session memory cleared; repo memories preserved.`
     );
     return;
   }
@@ -569,6 +621,7 @@ async function ensureStartupReady() {
     );
   }
   await loadSessions();
+  await loadRepoMemoryStore();
 }
 
 await loadRepoAliasStore();
@@ -597,7 +650,7 @@ bot.on("message", async (msg) => {
   if (text === "/start") {
     await bot.sendMessage(
       chatId,
-      "✅ Codex bridge online.\n\nCommands:\n/new or /clear - reset this chat's memory\n/state - show memory + pending push\n/push <description> - stage a push request\n/confirmpush - run staged push\n/cancelpush - cancel staged push\n\nYou can also send a screenshot (with optional caption), and I’ll pass it to Codex."
+      "✅ Codex bridge online.\n\nCommands:\n/new or /clear - reset this chat's short-term memory\n/state - show history + repo memories + pending push\n/remember <fact> - save a repo note\n/memories - list saved repo notes\n/forget <id or text> - remove a repo note\n/push <description> - stage a push request\n/confirmpush - run staged push\n/cancelpush - cancel staged push\n\nYou can also send a screenshot, voice note, or screen recording, and I’ll pass the useful context to Codex."
     );
     return;
   }
@@ -605,7 +658,7 @@ bot.on("message", async (msg) => {
   if (text === "/new" || text === "/clear") {
     sessions[String(chatId)] = { history: [], pendingPush: null };
     await saveSessions();
-    await bot.sendMessage(chatId, "Session memory cleared for this chat.");
+    await bot.sendMessage(chatId, "Session memory cleared for this chat. Repo memories were kept.");
     return;
   }
 
@@ -616,8 +669,49 @@ bot.on("message", async (msg) => {
       : "no";
     await bot.sendMessage(
       chatId,
-      `History entries: ${session.history.length}\nPending push: ${pending}`
+      `History entries: ${session.history.length}\nRepo memories: ${getCurrentRepoMemories().length}\nPending push: ${pending}`
     );
+    return;
+  }
+
+  if (text.startsWith("/remember")) {
+    const fact = text.replace(/^\/remember\s*/, "");
+    if (!normalizeMemoryText(fact)) {
+      await bot.sendMessage(chatId, "Use: /remember <fact to save for this repo>");
+      return;
+    }
+    const result = await rememberCurrentRepoFact(fact, { source: "manual" });
+    await bot.sendMessage(
+      chatId,
+      result.created
+        ? `Saved repo memory for ${config.targetRepoDir}:\n- ${result.entry.text}`
+        : `Updated existing repo memory for ${config.targetRepoDir}:\n- ${result.entry.text}`
+    );
+    return;
+  }
+
+  if (text === "/memories") {
+    await bot.sendMessage(
+      chatId,
+      `Repo memories for ${config.targetRepoDir}:\n${formatRepoMemories(getCurrentRepoMemories())}`
+    );
+    return;
+  }
+
+  if (text.startsWith("/forget")) {
+    const selector = text.replace(/^\/forget\s*/, "");
+    if (!normalizeMemoryText(selector)) {
+      await bot.sendMessage(chatId, "Use: /forget <memory id or unique text>");
+      return;
+    }
+    const result = forgetRepoFact(repoMemoryStore, config.targetRepoDir, selector);
+    if (!result.removed) {
+      await bot.sendMessage(chatId, "No matching repo memory found.");
+      return;
+    }
+    repoMemoryStore = result.store;
+    await saveRepoMemoryStore();
+    await bot.sendMessage(chatId, `Forgot repo memory:\n- ${result.removed.text}`);
     return;
   }
 
@@ -697,6 +791,9 @@ bot.on("message", async (msg) => {
         head: branch,
         base: config.targetBranch,
       });
+      await saveAutoRepoMemory(
+        `Recent PR created: ${pr.title} from ${branch} into ${config.targetBranch}.`
+      );
       await bot.sendMessage(
         chatId,
         `✅ Pull request created.\nTitle: ${pr.title}\nURL: ${pr.html_url || pr.url}`
@@ -797,6 +894,16 @@ After changes, summarize:
       await bot.sendMessage(chatId, mediaReply);
     }
     const mediaPromptSection = buildMediaPromptSection(mediaInfo);
+    const memoryQueryText = [
+      userText,
+      hasImage ? "screenshot attached" : "",
+      mediaPromptSection !== "No audio/video attachments." ? mediaPromptSection : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+    const repoMemoryContext = buildMemoryPromptSection(getCurrentRepoMemories(), memoryQueryText, {
+      historyText: historyContext,
+    });
 
     const guardedPrompt = `
 You are working ONLY inside:
@@ -816,6 +923,9 @@ ${imagePath ? `User attached a screenshot at: ${imagePath}` : "No screenshot att
 Audio/video transcription:
 ${mediaPromptSection}
 
+Saved long-term repo memory:
+${repoMemoryContext}
+
 Conversation context from this Telegram chat:
 ${historyContext}
 
@@ -826,6 +936,9 @@ ${userText || "(no caption text provided; use the screenshot context)"}
     const historyUserText = [
       isPush ? `/confirmpush ${userText}` : userText || "(image-only message)",
       imagePath ? `[screenshot: ${imagePath}]` : "",
+      mediaPromptSection !== "No audio/video attachments."
+        ? `[media: ${mediaPromptSection}]`
+        : "",
     ]
       .filter(Boolean)
       .join("\n");
@@ -864,6 +977,13 @@ ${userText || "(no caption text provided; use the screenshot context)"}
         finalMessage =
           result +
           `\n\nPush status:\n- Ran: git -C ${config.targetRepoDir} push ${config.targetRemote} ${config.targetBranch}\n- Result: success`;
+        const commitSubject = await runGit(["log", "-1", "--pretty=%s"]);
+        const subject = String(commitSubject.out || "").trim();
+        if (subject) {
+          await saveAutoRepoMemory(`Recent shipped change: ${subject}.`, {
+            commit: headAfter,
+          });
+        }
       }
     } else {
     }

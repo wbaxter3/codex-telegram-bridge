@@ -43,6 +43,10 @@ export function parseConfig(env, cwd, currentFilePath) {
     cwd,
     parseOptionalString(env, "REPO_ALIAS_STORE_PATH", "data/repo-aliases.json")
   );
+  const repoMemoryStorePath = path.resolve(
+    cwd,
+    parseOptionalString(env, "REPO_MEMORY_STORE_PATH", "data/repo-memories.json")
+  );
 
   return {
     token: parseRequiredString(env, "TELEGRAM_BOT_TOKEN"),
@@ -61,6 +65,7 @@ export function parseConfig(env, cwd, currentFilePath) {
     inputsSubdir,
     primaryGitDir: path.resolve(repoDir, ".git"),
     repoAliasStorePath: aliasStorePath,
+    repoMemoryStorePath,
     appDir: path.dirname(currentFilePath),
     telegramMax: parseOptionalNumber(env, "TELEGRAM_MAX_MESSAGE", 3900),
     historyTurns: parseOptionalNumber(env, "HISTORY_TURNS", 8),
